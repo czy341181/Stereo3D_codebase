@@ -4,7 +4,6 @@ import tqdm
 import torch
 import numpy as np
 import torch.nn as nn
-import kornia
 import time
 import shutil
 
@@ -47,8 +46,7 @@ class Trainer(object):
                  test_loader,
                  lr_scheduler,
                  warmup_lr_scheduler,
-                 logger,
-                 rank):
+                 logger):
         self.cfg = cfg
         self.model = model
         self.optimizer = optimizer
@@ -80,14 +78,11 @@ class Trainer(object):
                                          logger=self.logger)
             self.lr_scheduler.last_epoch = self.epoch - 1
 
-        if cfg['sync_bn'] == True:
-            self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
+        # # DDP
+        # self.model = torch.nn.parallel.DistributedDataParallel(
+        #     self.model, device_ids=[rank % torch.cuda.device_count()], find_unused_parameters=True)
 
-        # DDP
-        self.model = torch.nn.parallel.DistributedDataParallel(
-            self.model, device_ids=[rank % torch.cuda.device_count()], find_unused_parameters=True)
-
-        #self.model = torch.nn.DataParallel(self.model).cuda()
+        self.model = torch.nn.DataParallel(self.model).cuda()
 
     def train(self):
         start_epoch = self.epoch
@@ -98,7 +93,7 @@ class Trainer(object):
             # ref: https://github.com/pytorch/pytorch/issues/5059
             np.random.seed(np.random.get_state()[1][0] + epoch)
             # train one epoch
-            #self.train_one_epoch()
+            self.train_one_epoch()
             self.epoch += 1
 
             # update learning rate
@@ -176,12 +171,8 @@ class Trainer(object):
         right_results = {}
         dataset = self.test_loader.dataset
 
-        output_path = self.cfg['output_path']
-
-        if os.path.exists(output_path):
-            shutil.rmtree(output_path, True)
-        os.makedirs(output_path, exist_ok=False)
         with torch.no_grad():
+            print(len(self.test_loader))
             progress_bar = tqdm.tqdm(total=len(self.test_loader), leave=True, desc='Evaluation Progress')
             for batch_idx, inputs in enumerate(self.test_loader):
                 # load evaluation data and move data to GPU.
@@ -210,17 +201,19 @@ class Trainer(object):
 
         progress_bar.close()
 
-
         self.save_results(left_results, './left_outputs')
         self.save_results(right_results, './right_outputs')
+
+        self.logger.info("left image eval epoch{}".format(self.epoch))
         self.test_loader.dataset.eval(results_dir='./left_outputs/data', logger=self.logger, label_flag='left')
+        self.logger.info("right image eval epoch{}".format(self.epoch))
         self.test_loader.dataset.eval(results_dir='./right_outputs/data', logger=self.logger, label_flag='right')
 
     def save_results(self, results, output_dir='./outputs'):
         output_dir = os.path.join(output_dir, 'data')
         if os.path.exists(output_dir):
             shutil.rmtree(output_dir,True)
-        os.makedirs(output_dir, exist_ok=False)
+        os.makedirs(output_dir, exist_ok=True)
 
         for img_id in results.keys():
             output_path = os.path.join(output_dir, '{:06d}.txt'.format(img_id))

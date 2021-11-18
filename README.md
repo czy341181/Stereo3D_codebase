@@ -55,7 +55,7 @@ Move to the workplace and train the network:
 ```sh
  cd #ROOT
  cd experiments/example
- CUDA_VISIBLE_DEVICES=0,1 bash ./dist_train.sh 2 kitti_example.yaml
+CUDA_VISIBLE_DEVICES=0,1 python ../../tools/train_val.py --config kitti_example.yaml
 ```
 
 

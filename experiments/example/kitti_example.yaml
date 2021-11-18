@@ -2,7 +2,7 @@ random_seed: 444
 
 dataset:
   type: &dataset_type 'KITTI'
-  batch_size: 12
+  batch_size: 32
   writelist: ['Car', 'Pedestrian', 'Cyclist']
   flip_type: '3D'  #2D or 3D
   crop_size: [384, 1248]
@@ -33,11 +33,10 @@ optimizer:
 
 trainer:
   sync_bn: False  #if multi-gpu train, it should be true
-  max_epoch: 60
+  max_epoch: 200
   gpu_ids: 2,3
-  save_frequency: 1 # checkpoint save interval (in epoch)
-  eval_frequency: 1
-  output_path: 'rgb_outputs/data'
+  save_frequency: 20 # checkpoint save interval (in epoch)
+  eval_frequency: 20
   #resume_model: '/root/data/czy/czy_code/LIGA/experiments/example/checkpoints/checkpoint_epoch_10.pth'
 
 

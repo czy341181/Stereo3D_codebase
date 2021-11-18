@@ -110,13 +110,11 @@ def extract_dets_from_stereo_outputs(outputs, K=50):
 
     size_2d_right = torch.cat((width_right, size_2d_left[:,:,1].unsqueeze(dim = 2)), dim = 2)
 
-    depth = torch.zeros((batch, K, 1)).cuda()
-    heading = torch.zeros((batch, K, 24)).cuda()
-    size_3d = torch.zeros((batch, K, 3)).cuda()
-    xs3d = torch.zeros((batch, K, 1)).cuda()
-    ys3d = torch.zeros((batch, K, 1)).cuda()
-
-
+    depth = torch.zeros((batch, K, 1)).cuda()    #useless
+    heading = torch.zeros((batch, K, 24)).cuda() #useless
+    size_3d = torch.zeros((batch, K, 3)).cuda()  #useless
+    xs3d = torch.zeros((batch, K, 1)).cuda()     #useless
+    ys3d = torch.zeros((batch, K, 1)).cuda()     #useless
 
     detections_l = torch.cat([cls_ids, scores, xs2d_l, ys2d_l, size_2d_left, depth, heading, size_3d, xs3d, ys3d], dim=2)
     detections_r = torch.cat([cls_ids, scores, xs2d_r, ys2d_r, size_2d_right, depth, heading, size_3d, xs3d, ys3d], dim=2)

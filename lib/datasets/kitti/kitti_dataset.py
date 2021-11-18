@@ -18,7 +18,7 @@ from lib.datasets.kitti.kitti_utils import limit_period
 import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
 from lib.datasets.kitti.kitti_utils import boxes3d_pselidar_to_kitti_camera
 from lib.datasets.kitti.kitti_utils import points_to_depth_map
-
+from lib.datasets.kitti.kitti_eval_python.eval import get_official_eval_result
 
 from lib.datasets.utils import gaussian_radius
 from lib.datasets.utils import draw_umich_gaussian
