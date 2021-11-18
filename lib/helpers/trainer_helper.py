@@ -14,6 +14,9 @@ from lib.helpers.save_helper import save_checkpoint
 from torch.nn.utils import clip_grad_norm_
 from progress.bar import Bar
 
+from lib.helpers.decode_helper import extract_dets_from_stereo_outputs
+from lib.helpers.decode_helper import decode_detections
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -57,6 +60,8 @@ class Trainer(object):
         self.epoch = 0
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model = self.model.cuda()
+
+        self.class_name = self.test_loader.dataset.class_name
         # loading pretrain/resume model
         if cfg.get('pretrain_model'):
             assert os.path.exists(cfg['pretrain_model'])
@@ -78,13 +83,11 @@ class Trainer(object):
         if cfg['sync_bn'] == True:
             self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
 
-        ## DDP
-        # self.model = torch.nn.parallel.DistributedDataParallel(
-        #     self.model, device_ids=[rank % torch.cuda.device_count()], find_unused_parameters=True)
+        # DDP
+        self.model = torch.nn.parallel.DistributedDataParallel(
+            self.model, device_ids=[rank % torch.cuda.device_count()], find_unused_parameters=True)
 
         #self.model = torch.nn.DataParallel(self.model).cuda()
-
-
 
     def train(self):
         start_epoch = self.epoch
@@ -95,7 +98,7 @@ class Trainer(object):
             # ref: https://github.com/pytorch/pytorch/issues/5059
             np.random.seed(np.random.get_state()[1][0] + epoch)
             # train one epoch
-            self.train_one_epoch()
+            #self.train_one_epoch()
             self.epoch += 1
 
             # update learning rate
@@ -120,11 +123,11 @@ class Trainer(object):
 
     def train_one_epoch(self):
         self.model.train()
-        loss_stats = ['loss_rpn', 'loss_depth', 'rpn_loss_cls', 'rpn_loss_loc', 'rpn_loss_iou', 'rpn_loss_dir', 'loss_depth_0_ce']
+        loss_stats = ['seg_loss', 'offset2d_left_loss', 'offset2d_right_loss', 'size_2d_left_loss', 'width_right_loss']
         data_time, batch_time = AverageMeter(), AverageMeter()
         avg_loss_stats = {l: AverageMeter() for l in loss_stats}
         num_iters = len(self.train_loader)
-        bar = Bar('{}/{}'.format("3D", "LIGA"), max=num_iters)
+        bar = Bar('{}/{}'.format("3D", "Stereo"), max=num_iters)
         end = time.time()
 
         #progress_bar = tqdm.tqdm(total=len(self.train_loader), leave=(self.epoch+1 == self.cfg['max_epoch']), desc='iters')
@@ -147,7 +150,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
             ret_dict, tb_dict  = self.model(inputs)
 
-            loss = ret_dict['loss'].mean()
+            loss = ret_dict.mean()
             loss.backward()
             #clip_grad_norm_(self.model.parameters(), 10)
             self.optimizer.step()
@@ -169,9 +172,9 @@ class Trainer(object):
     def inference(self):
         # torch.set_grad_enabled(False)
         self.model.eval()
-        rgb_results = {}
+        left_results = {}
+        right_results = {}
         dataset = self.test_loader.dataset
-        class_names = dataset.class_name
 
         output_path = self.cfg['output_path']
 
@@ -198,16 +201,56 @@ class Trainer(object):
 
                 pred_dicts= self.model(inputs, False)
 
-                _ = dataset.generate_prediction_dicts(
-                    inputs, pred_dicts, class_names,
-                    output_path=output_path
-                )
+                dets_l, dets_r = self.process_dets2result(pred_dicts, inputs['frame_id'], inputs['bbox_downsample_ratio'])
+                left_results.update(dets_l)
+                right_results.update(dets_r)
+
 
                 progress_bar.update()
 
         progress_bar.close()
 
-        self.test_loader.dataset.eval(results_dir=output_path, logger=self.logger)
 
+        self.save_results(left_results, './left_outputs')
+        self.save_results(right_results, './right_outputs')
+        self.test_loader.dataset.eval(results_dir='./left_outputs/data', logger=self.logger, label_flag='left')
+        self.test_loader.dataset.eval(results_dir='./right_outputs/data', logger=self.logger, label_flag='right')
 
+    def save_results(self, results, output_dir='./outputs'):
+        output_dir = os.path.join(output_dir, 'data')
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir,True)
+        os.makedirs(output_dir, exist_ok=False)
 
+        for img_id in results.keys():
+            output_path = os.path.join(output_dir, '{:06d}.txt'.format(img_id))
+
+            f = open(output_path, 'w')
+            for i in range(len(results[img_id])):
+                class_name = self.class_name[int(results[img_id][i][0])]
+                f.write('{} 0.0 0'.format(class_name))
+                for j in range(1, len(results[img_id][i])):
+                    f.write(' {:.2f}'.format(results[img_id][i][j]))
+                f.write(' 1.50 1.69 4.33 3.45 2.41 36.08 -1.55 2.45')  #TODO remove it
+                f.write('\n')
+            f.close()
+
+    def process_dets2result(self, outputs, frame_id, bbox_downsample_ratio):
+        dets_l, dets_r = extract_dets_from_stereo_outputs(outputs=outputs, K=50)
+        dets_l = dets_l.detach().cpu().numpy()
+        dets_r = dets_r.detach().cpu().numpy()
+        # get corresponding calibs & transform tensor to numpy
+        calibs = [self.test_loader.dataset.get_calib(index) for index in frame_id]
+        #info = {key: val.detach().cpu().numpy() for key, val in info.items()}
+        #cls_mean_size = self.test_loader.dataset.cls_mean_size
+        dets_l = decode_detections(dets=dets_l,
+                                 frame_id=frame_id,
+                                 bbox_downsample_ratio=bbox_downsample_ratio,
+                                 calibs=calibs,
+                                 threshold=self.cfg.get('threshold', 0.2))
+        dets_r = decode_detections(dets=dets_r,
+                                 frame_id=frame_id,
+                                bbox_downsample_ratio=bbox_downsample_ratio,
+                                 calibs=calibs,
+                                 threshold=self.cfg.get('threshold', 0.2))
+        return dets_l, dets_r

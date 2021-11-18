@@ -214,6 +214,17 @@ class Calibration(object):
         pts_rect_depth = pts_2d_hom[:, 2] - self.P2.T[3, 2]  # depth in rect camera coord
         return pts_img, pts_rect_depth
 
+    def rect_to_rightimg(self, pts_rect):
+        """
+        :param pts_rect: (N, 3)
+        :return pts_img: (N, 2)
+        """
+        pts_rect_hom = self.cart_to_hom(pts_rect)
+        pts_2d_hom = np.dot(pts_rect_hom, self.P3.T)
+        pts_img = (pts_2d_hom[:, 0:2].T / pts_rect_hom[:, 2]).T  # (N, 2)
+        pts_rect_depth = pts_2d_hom[:, 2] - self.P3.T[3, 2]  # depth in rect camera coord
+        return pts_img, pts_rect_depth
+
     def lidar_to_img(self, pts_lidar):
         """
         :param pts_lidar: (N, 3)
@@ -515,9 +526,8 @@ def random_flip_horizontal_3d(image_l, image_r, gt_bbox3d, calib):
 
     return aug_image_l, aug_image_r, aug_gt_bbox3d, aug_calib, flag
 
-def random_flip(image_l, image_r, left_bbox, right_bbox, calib):
+def random_flip(image_l, image_r, left_bbox, right_bbox, left_project_center, right_project_center, calib):
     enable = np.random.choice([False, True], replace=False, p=[0.5, 0.5])
-    enable = True
     if enable:
         # Flip images
         W = image_l.size[0]
@@ -535,7 +545,11 @@ def random_flip(image_l, image_r, left_bbox, right_bbox, calib):
         aug_right_bbox[:, 0] = W - left_bbox[:, 2]
         aug_right_bbox[:, 2] = W - left_bbox[:, 0]
 
-        aug_left_bbox
+        aug_right_project_center = copy.copy(left_project_center)
+        aug_left_project_center = copy.copy(right_project_center)
+
+        aug_left_project_center[:, 0] = W - aug_left_project_center[:, 0]
+        aug_right_project_center[:, 0] = W - aug_right_project_center[:, 0]
 
         aug_calib.fliplr(W)
         flag = True
@@ -546,10 +560,13 @@ def random_flip(image_l, image_r, left_bbox, right_bbox, calib):
 
         aug_left_bbox = left_bbox
         aug_right_bbox = right_bbox
+        aug_left_project_center = left_project_center
+        aug_right_project_center = right_project_center
+
         aug_calib = calib
         flag = False
 
-    return aug_image_l, aug_image_r, aug_left_bbox, aug_right_bbox, aug_calib, flag
+    return aug_image_l, aug_image_r, aug_left_bbox, aug_right_bbox, aug_left_project_center, aug_right_project_center, aug_calib, flag
 
 
 def mask_boxes_outside_range_numpy(boxes, limit_range, min_num_corners=1):

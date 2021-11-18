@@ -19,6 +19,10 @@ import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
 from lib.datasets.kitti.kitti_utils import boxes3d_pselidar_to_kitti_camera
 from lib.datasets.kitti.kitti_utils import points_to_depth_map
 
+
+from lib.datasets.utils import gaussian_radius
+from lib.datasets.utils import draw_umich_gaussian
+
 import cv2
 
 #from lib.models.roiaware_pool3d import roiaware_pool3d_utils
@@ -29,11 +33,13 @@ import scipy.misc
 class KITTI_Dataset(data.Dataset):
     def __init__(self, split, cfg):
         # basic configuration
+        self.max_objs = 50
+        self.resolution = np.array(cfg['crop_size'])
         self.root_dir = cfg.get('root_dir', '../../data/KITTI')
         self.split = split
         self.num_classes = len(cfg['writelist'])
         self.class_name = cfg['writelist']
-        self.cls2id = {'Car': 0, 'Pedestrian': 1, 'Cyclist': 2}
+        self.cls2id = {'Car': 0, 'Pedestrian': 1, 'Cyclist': 2, 'Van': 3, 'Truck': 4}
 
         # data split loading
         assert self.split in ['train', 'val', 'trainval', 'test']
@@ -44,30 +50,31 @@ class KITTI_Dataset(data.Dataset):
         self.data_dir = os.path.join(self.root_dir, 'object', 'testing' if split == 'test' else 'training')
         # self.image_dir = os.path.join(self.data_dir, 'image_2')
         # self.image_dir = os.path.join(self.data_dir, 'image_2')
-        self.depth_dir = os.path.join(self.data_dir, 'depth_2')
+        #self.depth_dir = os.path.join(self.data_dir, 'depth_2')
         self.calib_dir = os.path.join(self.data_dir, 'calib')
         self.label_dir = os.path.join(self.data_dir, 'label_2')
-
+        self.label_dir_3 = os.path.join(self.data_dir, 'label_3')
         # data augmentation configuration
         self.istrain = True if split in ['train', 'trainval'] else False
 
         # monocular
         self.downsample = 4
-        self.depth_downsample_factor = 4
-        self.point_cloud_range = cfg['pc_range']
+        #self.depth_downsample_factor = 4
+        #self.point_cloud_range = cfg['pc_range']
 
         # stereo
-        self.use_van = True
-        self.use_person_sitting = True
+        #self.use_van = True
+        #self.use_person_sitting = True
         self.flip_type = cfg['flip_type']
         self.crop_size = cfg['crop_size']
-        self.gen_depth = cfg['gen_depth']
+        #self.gen_depth = cfg['gen_depth']
 
     def get_image(self, idx, image_id=2):
         img_file = os.path.join(self.data_dir + ('/image_%s' % image_id), '%06d.png' % idx)
         assert os.path.exists(img_file)
         image = Image.open(img_file).convert("RGB")
         return image
+
 
     def get_left_label(self, idx):
         label_file = os.path.join(self.label_dir, '%06d.txt' % idx)
@@ -85,11 +92,14 @@ class KITTI_Dataset(data.Dataset):
         return Calibration(calib_file)
 
 
-    def eval(self, results_dir, logger):
+    def eval(self, results_dir, logger, label_flag):
         logger.info("==> Loading detections and GTs...")
         img_ids = [int(id) for id in self.idx_list]
         dt_annos = kitti.get_label_annos(results_dir)
-        gt_annos = kitti.get_label_annos(self.label_dir, img_ids)
+        if label_flag == 'left':
+            gt_annos = kitti.get_label_annos(self.label_dir, img_ids)
+        elif label_flag == 'right':
+            gt_annos = kitti.get_label_annos(self.label_dir_3, img_ids)
 
         test_id = {'Car': 0, 'Pedestrian': 1, 'Cyclist': 2}
 
@@ -112,6 +122,7 @@ class KITTI_Dataset(data.Dataset):
         # if self.istrain==True:
         #     depth = self.get_depth_map(index)
         img_size = np.array(img_l.size[:2], dtype=np.int32)
+        features_size = self.resolution // self.downsample    # W * H
 
         calib = self.get_calib(index)
         calib_ori = copy.deepcopy(calib)
@@ -124,35 +135,42 @@ class KITTI_Dataset(data.Dataset):
             gt_occluded = []
 
             locations = []
+            left_project_center = []
+            right_project_center = []
             dims = []
             rotations_y = []
             left_bbox = []
             right_bbox = []
-            for l_object, r_object in zip(l_objects, r_objects):
-                if self.use_van:  # default: True
-                    # Car 14357, Van 1297
-                    if l_object.cls_type == 'Van':
-                        l_object.cls_type = 'Car'
 
-                if self.use_person_sitting:  # default: True
-                    # Ped 2207, Person_sitting 56
-                    if l_object.cls_type == 'Person_sitting':
-                        l_object.cls_type = 'Pedestrian'
-                if l_object.cls_type not in self.class_name:
+            for l_object, r_object in zip(l_objects, r_objects):
+                # if self.use_van:  # default: True
+                #     # Car 14357, Van 1297
+                #     if l_object.cls_type == 'Van':
+                #         l_object.cls_type = 'Car'
+                #
+                # if self.use_person_sitting:  # default: True
+                #     # Ped 2207, Person_sitting 56
+                #     if l_object.cls_type == 'Person_sitting':
+                #         l_object.cls_type = 'Pedestrian'
+                if l_object.cls_type not in self.class_name + ['Van', 'Truck']:  #DontCare
                     continue
 
                 if float(l_object.trucation) >= 0.98:
                     continue
 
-                # union_bbox_item = np.zeros((4))
-                # union_bbox_item[0] = min(l_object.box2d[0], r_object.box2d[0])
-                # union_bbox_item[1] = min(l_object.box2d[1], r_object.box2d[1])
-                # union_bbox_item[2] = max(l_object.box2d[2], r_object.box2d[2])
-                # union_bbox_item[3] = max(l_object.box2d[3], r_object.box2d[3])
+                center_3d = l_object.pos + [0, -l_object.h / 2, 0]
+                center_3d = center_3d.reshape(-1, 3)  # shape adjustment (N, 3)
+                center_3d_l, _ = calib.rect_to_img(center_3d)  # project 3D center to image plane
+                center_3d_l = center_3d_l[0]  # shape adjustment
+
+                center_3d_r, _ = calib.rect_to_rightimg(center_3d)  # project 3D center to image plane
+                center_3d_r = center_3d_r[0]  # shape adjustment
 
 
                 gt_names.append(l_object.cls_type)
                 locations.append(l_object.pos)
+                left_project_center.append(center_3d_l)
+                right_project_center.append(center_3d_r)
                 dims.append([l_object.l, l_object.h, l_object.w])
                 rotations_y.append(l_object.ry)
                 left_bbox.append(l_object.box2d)
@@ -162,17 +180,19 @@ class KITTI_Dataset(data.Dataset):
 
             gt_names = np.array(gt_names)
             locations = np.array(locations)
+            left_project_center = np.array(left_project_center)
+            right_project_center = np.array(right_project_center)
             dims = np.array(dims)
             rotations_y = np.array(rotations_y)
             left_bbox = np.array(left_bbox)
             right_bbox = np.array(right_bbox)
             gt_truncated = np.array(gt_truncated)
             gt_occluded = np.array(gt_occluded)
-            gt_classes = np.array([self.cls2id[n] + 1 for n in gt_names], dtype=np.int32)
+            gt_classes = np.array([self.cls2id[n] for n in gt_names], dtype=np.int32)
 
         if self.istrain == True:
-            img_l, img_r, left_bbox, right_bbox, calib, flip_this_image = \
-                random_flip(img_l, img_r, left_bbox, right_bbox, calib)
+            img_l, img_r, left_bbox, right_bbox, left_project_center, right_project_center, calib, flip_this_image = \
+                random_flip(img_l, img_r, left_bbox, right_bbox, left_project_center, right_project_center, calib)
 
             union_bbox = copy.copy(left_bbox)
             for i in range(union_bbox.shape[0]):
@@ -181,6 +201,66 @@ class KITTI_Dataset(data.Dataset):
                 union_bbox[i, 2] = max(left_bbox[i, 2], right_bbox[i, 2])
                 union_bbox[i, 3] = max(left_bbox[i, 3], right_bbox[i, 3])
 
+
+
+            heatmap = np.zeros((self.num_classes, self.resolution[0]//4, self.resolution[1]//4), dtype=np.float32)  # C * H * W
+            offset_2d_left = np.zeros((self.max_objs, 2), dtype=np.float32)
+            offset_2d_right = np.zeros((self.max_objs, 2), dtype=np.float32)
+            size_2d_left = np.zeros((self.max_objs, 2), dtype=np.float32)
+            width_right = np.zeros((self.max_objs, 1), dtype=np.float32)
+            indices = np.zeros((self.max_objs), dtype=np.int64)
+            mask_2d = np.zeros((self.max_objs), dtype=np.uint8)
+
+            left_project_center_copy = copy.copy(left_project_center)
+            right_project_center_copy = copy.copy(right_project_center)
+
+            left_bbox_copy = copy.copy(left_bbox)
+            right_bbox_copy = copy.copy(right_bbox)
+
+            for i in range(union_bbox.shape[0]):
+                left_box = left_bbox_copy[i, :]
+                right_box = right_bbox_copy[i, :]
+                left_box /= self.downsample
+                right_box /= self.downsample
+
+                left_project_center_item = left_project_center_copy[i, :]
+                right_project_center_item = right_project_center_copy[i, :]
+                left_project_center_item /= self.downsample
+                right_project_center_item /= self.downsample
+
+                center_2d_left = np.array([(left_box[0] + left_box[2]) / 2, (left_box[1] + left_box[3]) / 2],
+                                     dtype=np.float32)  # W * H
+                center_2d_right = np.array([(right_box[0] + right_box[2]) / 2, (right_box[1] + right_box[3]) / 2],
+                                     dtype=np.float32)  # W * H
+
+                left_project_center_item = left_project_center_item.astype(np.int32)
+                right_project_center_item = right_project_center_item.astype(np.int32)
+
+                if left_project_center_item[0] < 0 or left_project_center_item[0] >= img_size[0]//4: continue
+                if left_project_center_item[1] < 0 or left_project_center_item[1] >= img_size[1]//4: continue
+
+                if right_project_center_item[0] < 0 or right_project_center_item[0] >= img_size[0]//4: continue
+                if right_project_center_item[1] < 0 or right_project_center_item[1] >= img_size[1]//4: continue
+
+                # generate the radius of gaussian heatmap
+                w, h = left_box[2] - left_box[0], left_box[3] - left_box[1]
+                width_r = right_box[2] - right_box[0]
+                radius = gaussian_radius((w, h))
+                radius = max(0, int(radius))
+
+                if gt_names[i] in ['Van', 'Truck']:
+                    draw_umich_gaussian(heatmap[0], left_project_center_item, radius)
+                    continue
+
+                draw_umich_gaussian(heatmap[gt_classes[i]], left_project_center_item, radius)
+                # encoding 2d/3d offset & 2d size
+                indices[i] = left_project_center_item[1] * self.resolution[1]//4 + left_project_center_item[0]
+                offset_2d_left[i] = center_2d_left - left_project_center_item
+                offset_2d_right[i] = center_2d_right - left_project_center_item
+                size_2d_left[i] = 1. * w, 1. * h
+                width_right[i] = 1. * width_r
+
+                mask_2d[i] = 1
 
         # visual for debug
         # img_l = np.ascontiguousarray(img_l, dtype=np.uint8)
@@ -195,32 +275,48 @@ class KITTI_Dataset(data.Dataset):
         #             img_union[:, :, ::-1])
         #
         # img_l = np.ascontiguousarray(img_l, dtype=np.uint8)
-        # for box_item in left_bbox:
+        # for box_item in left_project_center:
         #     #print(item)
-        #     cv2.rectangle(img_l, (int(box_item[0]), int(box_item[1])), (int(box_item[2]), int(box_item[3])), (0, 255, 0), 2)
-        # cv2.imwrite("/data1/czy/3D/czy_code/LIGA_czy/data/KITTI/visual/left{}.jpg".format(item), img_l[:,:,::-1])
+        #     cv2.circle(img_l, (int(box_item[0]),int(box_item[1])), 1, (0, 255, 0), 2)
+        #     #cv2.rectangle(img_l, (int(box_item[0]), int(box_item[1])), (int(box_item[2]), int(box_item[3])), (0, 255, 0), 2)
+        # cv2.imwrite("/data1/czy/3D/czy_code/LIGA_czy/data/KITTI/visual/left_{}.jpg".format(item), img_l[:,:,::-1])
         #
         # img_r = np.ascontiguousarray(img_r, dtype=np.uint8)
-        # for box_item in right_bbox:
+        # for box_item in right_project_center:
         #     #print(item)
-        #     cv2.rectangle(img_r, (int(box_item[0]), int(box_item[1])), (int(box_item[2]), int(box_item[3])), (0, 255, 0), 2)
+        #     cv2.circle(img_r, (int(box_item[0]),int(box_item[1])), 1, (0, 255, 0), 2)
+        #     #cv2.rectangle(img_r, (int(box_item[0]), int(box_item[1])), (int(box_item[2]), int(box_item[3])), (0, 255, 0), 2)
         # cv2.imwrite("/data1/czy/3D/czy_code/LIGA_czy/data/KITTI/visual/right_{}.jpg".format(item), img_r[:,:,::-1])
+
+        #cv2.imwrite("/data1/czy/3D/czy_code/LIGA_czy/data/KITTI/visual/heatmap.jpg".format(item), (heatmap.transpose(1, 2, 0)[:,:,0]*255))
+
         img_l = np.array(img_l, dtype=np.float32)
         img_r = np.array(img_r, dtype=np.float32)
 
         if self.istrain == True:
             input['frame_id'] = index
+            input['bbox_downsample_ratio'] = img_size/features_size[::-1]
             input['image_shape'] = img_l.shape[:2]
             input['calib'] = calib
-            input['left_bbox'] = left_bbox
-            input['right_bbox'] = right_bbox
-            input['union_bbox'] = union_bbox
+            # input['left_bbox'] = left_bbox
+            # input['right_bbox'] = right_bbox
+            # input['union_bbox'] = union_bbox
             input['left_img'] = img_l
             input['right_img'] = img_r
+
+            ### target ##
+            input['size_2d_left'] = size_2d_left
+            input['heatmap'] = heatmap
+            input['offset_2d_left'] = offset_2d_left
+            input['offset_2d_right'] = offset_2d_right
+            input['indices'] = indices
+            input['width_right']= width_right
+            input['mask_2d'] = mask_2d
 
 
         else:
             input['frame_id'] = index
+            input['bbox_downsample_ratio'] = img_size/features_size[::-1]
             input['image_shape'] = img_size
             input['calib'] = calib
             input['left_img'] = img_l
@@ -229,90 +325,6 @@ class KITTI_Dataset(data.Dataset):
 
         return input
 
-    @staticmethod
-    def generate_prediction_dicts(batch_dict, pred_dicts, class_names, output_path=None):
-        """
-        Args:
-            batch_dict:
-                frame_id:
-            pred_dicts: list of pred_dicts
-                pred_boxes: (N, 7), Tensor
-                pred_scores: (N), Tensor
-                pred_labels: (N), Tensor
-            class_names:
-            output_path:
-
-        Returns:
-
-        """
-
-        def get_template_prediction(num_samples):
-            ret_dict = {
-                'name': np.zeros(num_samples), 'truncated': np.zeros(num_samples),
-                'occluded': np.zeros(num_samples), 'alpha': np.zeros(num_samples),
-                'bbox': np.zeros([num_samples, 4]), 'dimensions': np.zeros([num_samples, 3]),
-                'location': np.zeros([num_samples, 3]), 'rotation_y': np.zeros(num_samples),
-                'score': np.zeros(num_samples), 'boxes_lidar': np.zeros([num_samples, 7])
-            }
-            return ret_dict
-
-        def generate_single_sample_dict(batch_index, box_dict):
-            pred_scores = box_dict['pred_scores'].cpu().numpy()
-            pred_boxes = box_dict['pred_boxes'].cpu().numpy()
-            pred_labels = box_dict['pred_labels'].cpu().numpy()
-            pred_dict = get_template_prediction(pred_scores.shape[0])
-            if pred_scores.shape[0] == 0:
-                return pred_dict
-
-            calib = batch_dict['calib'][batch_index]
-            image_shape = batch_dict['image_shape'][batch_index].cpu().numpy()
-
-            # NOTE: in stereo mode, the 3d boxes are predicted in pseudo lidar coordinates
-            pred_boxes_camera = boxes3d_pselidar_to_kitti_camera(pred_boxes, calib)
-            pred_boxes_img = boxes3d_kitti_camera_to_imageboxes(
-                pred_boxes_camera, calib, image_shape=image_shape, fix_neg_z_bug=True
-            )
-
-            ###  monocular lidar coordinate ###
-            # pred_boxes_camera = boxes3d_lidar_to_kitti_camera(pred_boxes, calib)
-            # pred_boxes_img = boxes3d_kitti_camera_to_imageboxes(
-            #     pred_boxes_camera, calib, image_shape=image_shape
-            # )
-
-            pred_dict['name'] = np.array(class_names)[pred_labels - 1]
-            pred_dict['alpha'] = -np.arctan2(-pred_boxes[:, 1], pred_boxes[:, 0]) + pred_boxes_camera[:, 6]
-            pred_dict['bbox'] = pred_boxes_img
-            pred_dict['dimensions'] = pred_boxes_camera[:, 3:6]
-            pred_dict['location'] = pred_boxes_camera[:, 0:3]
-            pred_dict['rotation_y'] = pred_boxes_camera[:, 6]
-            pred_dict['score'] = pred_scores
-            # pred_dict['boxes_lidar'] = pred_boxes
-
-            return pred_dict
-
-        annos = []
-        for index, box_dict in enumerate(pred_dicts):
-            frame_id = batch_dict['frame_id'][index]
-            single_pred_dict = generate_single_sample_dict(index, box_dict)
-            single_pred_dict['frame_id'] = frame_id
-            annos.append(single_pred_dict)
-
-            if output_path is not None:
-                cur_det_file = output_path + '/' + ('%s.txt' % frame_id)
-                with open(cur_det_file, 'w') as f:
-                    bbox = single_pred_dict['bbox']
-                    loc = single_pred_dict['location']
-                    dims = single_pred_dict['dimensions']  # lhw -> hwl
-
-                    for idx in range(len(bbox)):
-                        print('%s -1 -1 %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f'
-                              % (single_pred_dict['name'][idx], single_pred_dict['alpha'][idx],
-                                 bbox[idx][0], bbox[idx][1], bbox[idx][2], bbox[idx][3],
-                                 dims[idx][1], dims[idx][2], dims[idx][0], loc[idx][0],
-                                 loc[idx][1], loc[idx][2], single_pred_dict['rotation_y'][idx],
-                                 single_pred_dict['score'][idx]), file=f)
-
-        return annos
 
     @staticmethod
     def collate_batch(batch_list, _unused=False):
@@ -324,15 +336,7 @@ class KITTI_Dataset(data.Dataset):
         ret = {}
         for key, val in data_dict.items():
             try:
-                if key in ['voxels', 'voxel_num_points']:
-                    ret[key] = np.concatenate(val, axis=0)
-                elif key in ['points', 'voxel_coords']:
-                    coors = []
-                    for i, coor in enumerate(val):
-                        coor_pad = np.pad(coor, ((0, 0), (1, 0)), mode='constant', constant_values=i)
-                        coors.append(coor_pad)
-                    ret[key] = np.concatenate(coors, axis=0)
-                elif key in ['gt_boxes']:
+                if key in ['gt_boxes']:
                     max_gt = max([len(x) for x in val])
                     batch_gt_boxes3d = np.zeros((batch_size, max_gt, val[0].shape[-1]), dtype=np.float32)
                     for k in range(batch_size):

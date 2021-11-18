@@ -2,148 +2,22 @@ random_seed: 444
 
 dataset:
   type: &dataset_type 'KITTI'
-  batch_size: 2
+  batch_size: 12
   writelist: ['Car', 'Pedestrian', 'Cyclist']
-  pc_range: [2, -30.4, -3, 59.6, 30.4, 1]
   flip_type: '3D'  #2D or 3D
-  crop_size: [320, 1280]
+  crop_size: [384, 1248]
   gen_depth: True
 
 model:
   type: 'Stereo'
-  pc_range: [2, -30.4, -3, 59.6, 30.4, 1]
-  grid_size: [288, 304,  20] #for caddn [280, 376, 25]
-  voxel_size: [0.2, 0.2, 0.2]
   class_names: [ 'Car', 'Pedestrian', 'Cyclist' ]
-  ligabackbone:
-    maxdisp: 288
-    downsample_disp: 4
-    GN: True
-    img_feature_attentionbydisp: True
-    voxel_attentionbydisp: False
-    cat_img_feature: True
-    num_3dconvs: 1
-    BACKBONE:
-      type: 'ResNet'
-      depth: 34
-      num_stages: 4
-      out_indices: [0,1,2,3]
-      frozen_stages: -1
-      norm_cfg:
-        type: 'BN'
-        requires_grad: True
-      norm_eval: False
-      style: 'pytorch'
-      with_max_pool: False
-      deep_stem: False
-      block_with_final_relu: False
-      base_channels: 64
-      strides: [1,2,1,1]
-      dilations: [1,1,2,4]
-      num_channels_factor: [1, 2, 2, 2]
-    feature_backbone_pretrained: 'torchvision://resnet34'
-    NECK:
-      GN: True
-      in_dims: [3, 64, 128, 128, 128]
-      start_level: 2
-      stereo_dim: [32, 32]
-      with_upconv: True
-      cat_img_feature: True
-      sem_dim: [128, 32]
-    SEM_NECK:
-      type: 'FPN'
-      in_channels: [32]
-      out_channels: 64
-      start_level: 0
-      add_extra_convs: 'on_output'
-      num_outs: 5
-    COST_VOLUME: [{type: "concat", downsample: 4}]
-    cv_dim: 32
-    rpn3d_dim: 32
-    downsampled_depth_offset: 0.5
-    use_stereo_out_type: 'feature'
-    num_hg: 1
-
-  heightcompression:
-    num_bev_features: 160
-    sparse_input: False
-
-  backbone_2d:
-    name: HgBEVBackbone
-    input_channels: 160
-    num_channels: 64
-    GN: True
-
-
-  anchorhead:
-    input_channels: 64
-    predict_boxes_when_training: False
-    clamp_value: 10.0
-    use_multihead: False
-    dir_offset: 0.78539
-    dir_limit_offset: 0.0
-    num_dir_bins: 2
-    num_convs: 2
-    GN: True
-    xyz_for_angles: True
-    hwl_for_angles: True
-    use_direction_classifier: True
-    ANCHOR_GENERATOR_CONFIG: [
-      {
-        'class_name': 'Car',
-        'anchor_sizes': [ [ 3.9, 1.6, 1.56 ] ],
-        'anchor_rotations': [ 0, 1.57 ],
-        'anchor_bottom_heights': [ -1.78 ],
-        'align_center': False,
-        'feature_map_stride': 1,
-        'matched_threshold': 0.6,
-        'unmatched_threshold': 0.45
-      },
-      {
-        'class_name': 'Pedestrian',
-        'anchor_sizes': [ [ 0.8, 0.6, 1.73 ] ],
-        'anchor_rotations': [ 0, 1.57 ],
-        'anchor_bottom_heights': [ -0.6 ],
-        'align_center': False,
-        'feature_map_stride': 1,
-        'matched_threshold': 0.5,
-        'unmatched_threshold': 0.35
-      },
-      {
-        'class_name': 'Cyclist',
-        'anchor_sizes': [ [ 1.76, 0.6, 1.73 ] ],
-        'anchor_rotations': [ 0, 1.57 ],
-        'anchor_bottom_heights': [ -0.6 ],
-        'align_center': False,
-        'feature_map_stride': 1,
-        'matched_threshold': 0.5,
-        'unmatched_threshold': 0.35
-      }
-    ]
-    TARGET_ASSIGNER_CONFIG:
-                NAME: AxisAlignedTargetAssigner
-                POS_FRACTION: -1.0
-                SAMPLE_SIZE: 512
-                NORM_BY_NUM_EXAMPLES: False
-                MATCH_HEIGHT: False
-                BOX_CODER: ResidualCoder
-                BOX_CODER_CONFIG:
-                  div_by_diagonal: True
-                  use_corners: False
-                  use_tanh: False
-
-    LOSS_CONFIG:
-      LOSS_WEIGHTS: {
-          'cls_weight': 1.0,
-          'loc_weight': 0.5,
-          'dir_weight': 0.2,
-          'iou_weight': 1.0,
-          'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-      }
-
-  depth_loss_head:
-    loss_type: {'ce': 1.0}
-    weight: [1.0]
+  backbone:
+    type: 'dla34'
+  neck:
+    downsample: 4
+  detection_head:
+    input_feature: 128
+    head_conv: 256
 
 optimizer:
   type: 'adamw'
@@ -162,7 +36,7 @@ trainer:
   max_epoch: 60
   gpu_ids: 2,3
   save_frequency: 1 # checkpoint save interval (in epoch)
-  eval_frequency: 10
+  eval_frequency: 1
   output_path: 'rgb_outputs/data'
   #resume_model: '/root/data/czy/czy_code/LIGA/experiments/example/checkpoints/checkpoint_epoch_10.pth'
 
