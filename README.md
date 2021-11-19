@@ -1,4 +1,4 @@
-# Stereo-codebased
+# Stereo-codebase
 
 ## Usage
 
